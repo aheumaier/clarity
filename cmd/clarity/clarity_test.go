@@ -1,26 +1,24 @@
 package main
 
 import (
-	"github.com/DATA-DOG/godog"
+	"github.com/cucumber/godog"
+	"github.com/cucumber/messages-go/v10"
 	"github.com/xchapter7x/clarity/pkg/matchers"
 )
 
-func noopComment(arg1 string) error {
-	return nil
-}
-
-func markPending(arg1 string) error {
-	return godog.ErrPending
-}
-
 func FeatureContext(s *godog.Suite) {
 	match := matchers.NewMatch()
-	s.Step(`^"([^"]*)"$`, noopComment)
-	s.Step(`^pending "([^"]*)"$`, markPending)
+	s.BeforeScenario(func(*messages.Pickle) {
+		match = matchers.NewMatch()
+	})
+	s.Step(`^Pivotal OpsManager .ptc$`, markPending)
+
 	s.Step(`^Terraform$`, match.Terraform)
 	s.Step(`^a "([^"]*)" of type "([^"]*)"$`, match.AOfType)
 	s.Step(`^a "([^"]*)" of type "([^"]*)" named "([^"]*)"$`, match.AOfTypeNamed)
 
+	s.Step(`^"([^"]*)"$`, noopComment)
+	s.Step(`^pending "([^"]*)"$`, markPending)
 	for _, phrasePrefix := range []string{
 		"the value of",
 		"attribute",
@@ -46,7 +44,12 @@ func FeatureContext(s *godog.Suite) {
 	s.Step(`^it occurs at least (\d+) times$`, match.ItOccursAtLeastTimes)
 	s.Step(`^it occurs at most (\d+) times$`, match.ItOccursAtMostTimes)
 	s.Step(`^it occurs exactly (\d+) times$`, match.ItOccursExactlyTimes)
-	s.BeforeScenario(func(interface{}) {
-		match = matchers.NewMatch()
-	})
+}
+
+func noopComment(arg1 string) error {
+	return nil
+}
+
+func markPending(arg1 string) error {
+	return godog.ErrPending
 }
