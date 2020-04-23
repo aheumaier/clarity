@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl"
+	hcl2 "github.com/instrumenta/conftest/parser/hcl2"
 )
 
 func NewMatch() *Match {
@@ -29,11 +30,17 @@ type HCLEntry struct {
 	Attributes    interface{}
 }
 
-func parseHCL(rawHCL map[string]interface{}) []HCLEntry {
+func parseHCL2(rawHCL map[string]interface{}) []HCLEntry {
 	hclEntries := make([]HCLEntry, 0)
 	for hclType, componentsArrayMap := range rawHCL {
-		for _, componentsMap := range componentsArrayMap.([]map[string]interface{}) {
-			hclEntries = addComponentsToEntries(hclEntries, hclType, componentsMap)
+		switch components := componentsArrayMap.(type) {
+		case map[string]interface{}:
+			hclEntries = addComponentsToEntries(hclEntries, hclType, components)
+
+		case []map[string]interface{}:
+			for _, componentsMap := range components {
+				hclEntries = addComponentsToEntries(hclEntries, hclType, componentsMap)
+			}
 		}
 	}
 	return hclEntries
@@ -59,6 +66,15 @@ func addComponentsToEntries(hclEntries []HCLEntry, hclType string, componentsMap
 						Attributes:    attributes,
 					})
 				}
+			case map[string]interface{}:
+				for instanceName, instance := range instancesCast {
+					hclEntries = append(hclEntries, HCLEntry{
+						HCLType:       hclType,
+						ComponentName: componentName,
+						InstanceName:  instanceName,
+						Attributes:    instance,
+					})
+				}
 			default:
 				hclEntries = append(hclEntries, HCLEntry{
 					HCLType:      hclType,
@@ -78,7 +94,17 @@ func (m *Match) Terraform() error {
 	if err != nil {
 		log.Panic(err)
 	}
-	return m.ReadTerraform(pwd)
+	return m.ReadTerraform(pwd, GetUnmarshallerVersion(1))
+}
+
+// HCL2 a simple matcher to show intent to init from a hcl2 terraform in
+// current directory
+func (m *Match) HCL2() error {
+	pwd, err := os.Getwd()
+	if err != nil {
+		log.Panic(err)
+	}
+	return m.ReadTerraform(pwd, GetUnmarshallerVersion(2))
 }
 
 // AlwaysAttributeEqualsInt - requires all elements to have an exact match on attributes or it fails
@@ -177,9 +203,20 @@ func (m *Match) AlwaysAttributeLessThan(searchKey string, searchValue int) error
 	return nil
 }
 
+type Unmarshaller func(p []byte, v interface{}) error
+
+func GetUnmarshallerVersion(version int) Unmarshaller {
+	if version == 1 {
+		return hcl.Unmarshal
+	}
+
+	p := new(hcl2.Parser)
+	return p.Unmarshal
+}
+
 // ReadTerrraform a simple matcher to init from terraform in
 // a given directory
-func (m *Match) ReadTerraform(tpath string) error {
+func (m *Match) ReadTerraform(tpath string, unmarshal Unmarshaller) error {
 	baseHCL := make(map[string]interface{}, 0)
 	dirContents := ""
 	files, err := ioutil.ReadDir(tpath)
@@ -198,12 +235,12 @@ func (m *Match) ReadTerraform(tpath string) error {
 		}
 	}
 
-	err = hcl.Unmarshal([]byte(dirContents), &baseHCL)
+	err = unmarshal([]byte(dirContents), &baseHCL)
 	if err != nil {
 		return fmt.Errorf("hcl Unmarshal failed: %v", err)
 	}
 
-	m.HCLEntries = parseHCL(baseHCL)
+	m.HCLEntries = parseHCL2(baseHCL)
 	return nil
 }
 
@@ -245,7 +282,6 @@ func (m *Match) AOfType(providerFeature, providerFeatureType string) error {
 		entries, _ := json.Marshal(m.HCLEntries)
 		return fmt.Errorf("no matches found for attribute %v \n %v", providerFeature, string(entries))
 	}
-
 	m.MatchingEntries = append(m.MatchingEntries, matchingFeature...)
 	return nil
 }
@@ -296,6 +332,12 @@ func attributeExists(searchName string, attributes interface{}) (bool, interface
 				}
 			}
 		}
+	case map[string]interface{}:
+		for k, v := range attributesCast {
+			if k == searchName {
+				return true, v
+			}
+		}
 	}
 	return false, nil
 }
@@ -310,7 +352,15 @@ func (m *Match) AttributeEqualsInt(searchKey string, searchValue int) error {
 
 	for _, entry := range m.MatchingEntries {
 		exists, attributeValue := attributeExists(searchKey, entry.Attributes)
-		if exists && attributeValue == searchValue {
+		var attributeInteger int
+		switch v := attributeValue.(type) {
+		case int:
+			attributeInteger = v
+		case float64:
+			attributeInteger = int(v)
+		}
+
+		if exists && attributeInteger == searchValue {
 			tmpEntries = append(tmpEntries, entry)
 		}
 	}
@@ -333,7 +383,15 @@ func (m *Match) AttributeDoesNotEqualInt(searchKey string, searchValue int) erro
 
 	for _, entry := range m.MatchingEntries {
 		exists, attributeValue := attributeExists(searchKey, entry.Attributes)
-		if exists && attributeValue != searchValue {
+		var attributeInteger int
+		switch v := attributeValue.(type) {
+		case int:
+			attributeInteger = v
+		case float64:
+			attributeInteger = int(v)
+		}
+
+		if exists && attributeInteger != searchValue {
 			tmpEntries = append(tmpEntries, entry)
 		}
 	}
@@ -414,6 +472,10 @@ func (m *Match) AttributeGreaterThan(searchKey string, searchValue int) error {
 			}
 		case int:
 			actualValue = attributeValue
+		case float64:
+			actualValue = int(attributeValue)
+		default:
+			return fmt.Errorf("could not translate to int")
 		}
 
 		if exists && actualValue > searchValue {
